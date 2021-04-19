@@ -6,22 +6,19 @@
 #include <WiFi.h>
 #include "driver/i2s.h"
 #include "I2s_SettingRX.h"
-#include "AsyncUDP.h"
+#include <WiFiUdp.h>
 
 const char* ssid = "conuco4";
 const char* password = "18921892";
 
-const int recPort = 3333;
+const int udpPort = 3334;
 const int sendPort = 3334;
 
-AsyncUDP udprec;
-AsyncUDP udpsend;
-
-uint8_t sendbuff[BUFFLEN];
+WiFiUDP udpsocket;
+uint8_t recbuff[BUFFLEN];
 
 TaskHandle_t timer1_TaskHandler = NULL;
-TaskHandle_t rec_audio_TaskHandler = NULL;
-TaskHandle_t send_audio_TaskHandler = NULL;
+TaskHandle_t audio_TaskHandler = NULL;
 
 unsigned long totalrec=0;
 unsigned long totalsent=0;
@@ -29,50 +26,50 @@ unsigned long speedrec=0;
 unsigned long speedsent=0;
 unsigned long tini=0;
 byte scaled=0;
+IPAddress remoteIP=(0,0,0,0);
+boolean clientexists=false;
+int logtime=1;
 
 static void timer1_task(void *arg)
 {
   while (1)
     {
-    Serial.print("Rec /Sent: "); Serial.print(speedrec);
-    Serial.print(" / "); Serial.println(speedsent);
+    Serial.print("Remote client: "); Serial.print(remoteIP);
+    Serial.print(" Rec/Sent: "); Serial.print(speedrec/logtime);
+    Serial.print("/"); Serial.println(speedsent/logtime);
     speedrec=0; speedsent=0; 
-    vTaskDelay(1000 / portTICK_PERIOD_MS); 
+    vTaskDelay(logtime*1000 / portTICK_PERIOD_MS); 
     }
 }
 
-static void rec_audio_task(void *arg)
-{
-  if(udprec.listen(recPort)) {
-      Serial.print("UDP Listening on: "); Serial.print(WiFi.localIP());
-      Serial.print(":"); Serial.println(recPort);
-      udprec.onPacket([](AsyncUDPPacket packet) {
-          speedrec = speedrec + packet.length();
-          totalrec = totalrec + packet.length();
-          i2s_write_bytes(I2S_PORT_TX, packet.data(), packet.length(), portMAX_DELAY);
-      });
-  }
-  while(1)
-    {
-    delay(1);
-    }
-}
-
-static void send_audio_task(void *arg)
+static void audio_task(void *arg)
 {
   size_t bytes_read=0;
-  if(udpsend.connect(IPAddress(192,168,1,101), sendPort)) {
-    Serial.print("UDP connected to: "); Serial.print(IPAddress(192,168,1,101));
-    Serial.print(":"); Serial.println(sendPort);
-  }   
-  while (1)
+  udpsocket.begin(udpPort);
+  while(1)
     {
-    i2s_read(I2S_PORT_RX, sendbuff, BUFFLEN, &bytes_read, portMAX_DELAY);
-    if (bytes_read>0)
+    int packetSize = udpsocket.parsePacket();
+    if (packetSize>0) {
+      remoteIP = udpsocket.remoteIP();
+      clientexists=true;
+      int leidos=udpsocket.read(recbuff, BUFFLEN);
+      if (leidos > 0)
+          i2s_write_bytes(I2S_PORT_TX, recbuff, leidos, portMAX_DELAY);
+      speedrec=speedrec+leidos;
+      totalrec=totalrec+leidos;
+      }
+    //////////////////////////////////// 
+    i2s_read(I2S_PORT_RX, recbuff, BUFFLEN, &bytes_read, portMAX_DELAY);
+    if (clientexists)
       {
-      udpsend.write (sendbuff, bytes_read);
-      speedsent=speedsent+bytes_read;
-      totalsent=totalsent+bytes_read;
+      if (bytes_read>0)
+        {
+        udpsocket.beginPacket(remoteIP,sendPort);
+        udpsocket.write(recbuff, BUFFLEN);
+        udpsocket.endPacket();
+        speedsent=speedsent+bytes_read;
+        totalsent=totalsent+bytes_read;
+        }
       }
     }
 }
@@ -101,8 +98,7 @@ void setup() {
   i2s_RX_init();
   i2s_TX_init();
   xTaskCreate(timer1_task, "timer1", 4096, NULL, 1, &timer1_TaskHandler);
-  xTaskCreate(rec_audio_task, "rec_audio", 10000, NULL, 1, &rec_audio_TaskHandler);
-  xTaskCreate(send_audio_task, "send_audio", 10000, NULL, 1, &send_audio_TaskHandler);
+  xTaskCreate(audio_task, "audio", 10000, NULL, 1, &audio_TaskHandler);
 }
 
 void loop() 

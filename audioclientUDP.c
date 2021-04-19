@@ -1,8 +1,8 @@
 /*	Cliente de audio
-	Recibe y envía sonido vía TCP 
-	El servidor envía y recibe el flujo I2S sin ningún tipo de conversión
+	Recibe y envía sonido vía UDP 
+	Envía y recibe el flujo I2S sin ningún tipo de conversión
 	Funciona con la tarjeta ESP32-LyraT
-	Se conecta aun servidor TCP, entonces empieza a recibir y enviar audio
+	Se conecta aun servidor UDP, entonces empieza a recibir y enviar audio
 */
 
 #include <string.h>
@@ -22,21 +22,13 @@
 #include "periph_sdcard.h"
 #include "board.h"
 #include "es8388.h"
-
-#if __has_include("esp_idf_version.h")
-#include "esp_idf_version.h"
-#else
-#define ESP_IDF_VERSION_VAL(major, minor, patch) 1
-#endif
-
 #include "esp_netif.h"
 
-#define WIFI_SSID "conuco4"
+#define WIFI_SSID "elconuco"
 #define WIFI_PASSWORD "18921892"
 
-#define SEND_HOST "192.168.1.125"
-#define REC_PORT 3334		// en el servidor es a la inversa
-#define SEND_PORT 3333		// en el servidor es a la inversa
+#define UDP_HOST "192.168.1.125"
+#define UDP_PORT 3334		// en el servidor es a la inversa
 
 #define I2S_PORT I2S_NUM_0
 #define SAMPLE_RATE (8000)
@@ -51,125 +43,83 @@ unsigned long totalsent=0;
 unsigned long speedrec=0;
 unsigned long speedsent=0;
 int player_volume;
+int logtime=1;
 
 static void timer1(void *pvParameters)
 {
 	while(1) {
-		if ((speedrec>0) || (speedsent>0)) {
-			ESP_LOGI(TAG, "speedrec / speedsent: %lu / %lu", speedrec, speedsent);
+		//if ((speedrec>0) || (speedsent>0)) 
+		{
+			ESP_LOGI(TAG, "Rec/Sent: %lu/%lu", speedrec/logtime, speedsent/logtime);
 			speedrec=0;	speedsent=0;
 		}
-		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		vTaskDelay(logtime*1000 / portTICK_PERIOD_MS);
 	}
 }
 
-static void udp_server_task(void *pvParameters)
+static void audio_task(void *pvParameters)
 {
-    uint8_t rx_buffer[BUFFLEN];
-    char addr_str[128];
-    int addr_family = (int)pvParameters;
-    int ip_protocol = 0;
-    struct sockaddr_in6 dest_addr;
-
     while (1) {
+		uint8_t x_buffer[BUFFLEN];
+		int ip_protocol = IPPROTO_IP;
+		int addr_family = AF_INET;
 
-        struct sockaddr_in *dest_addr_ip4 = (struct sockaddr_in *)&dest_addr;
-        dest_addr_ip4->sin_addr.s_addr = htonl(INADDR_ANY);
-        dest_addr_ip4->sin_family = AF_INET;
-        dest_addr_ip4->sin_port = htons(REC_PORT);
-        ip_protocol = IPPROTO_IP;
+		// sender ////////////////////////////////
+        struct sockaddr_in dest_addrS;
+        dest_addrS.sin_family = AF_INET;
+        dest_addrS.sin_port = htons(UDP_PORT);
+        dest_addrS.sin_addr.s_addr = inet_addr(UDP_HOST);
+		
+		// receiver //////////////////////////////////
+        struct sockaddr_in dest_addrR;
+        dest_addrR.sin_family = AF_INET;
+        dest_addrR.sin_port = htons(UDP_PORT);
+        dest_addrR.sin_addr.s_addr = htonl(INADDR_ANY);
 
-        int sock = socket(addr_family, SOCK_DGRAM, ip_protocol);
-        if (sock < 0) {
+        int udpsocket = socket(addr_family, SOCK_DGRAM, ip_protocol);
+        if (udpsocket < 0) {
             ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
             break;
         }
         ESP_LOGI(TAG, "Socket created");
 
-        int err = bind(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+        int err = bind(udpsocket, (struct sockaddr *)&dest_addrR, sizeof(dest_addrR));
         if (err < 0) {
             ESP_LOGE(TAG, "Socket unable to bind: errno %d", errno);
         }
-        ESP_LOGI(TAG, "Socket bound, port %d", REC_PORT);
-
-        while (1) {
-            //ESP_LOGI(TAG, "Waiting for data");
-            struct sockaddr_in6 source_addr; // Large enough for both IPv4 or IPv6
-            socklen_t socklen = sizeof(source_addr);
-            int len = recvfrom(sock, rx_buffer, sizeof(rx_buffer),0,(struct sockaddr *)&source_addr, &socklen);
-            // Error occurred during receiving
-            if (len < 0) {
-                ESP_LOGE(TAG, "recvfrom failed: errno %d", errno);
-                break;
-            }
-            // Data received
-            else {
-                // Get the sender's ip address as string
-                if (source_addr.sin6_family == PF_INET) {
-                    inet_ntoa_r(((struct sockaddr_in *)&source_addr)->sin_addr.s_addr, addr_str, sizeof(addr_str) - 1);
-                }
-				speedrec=speedrec+len;
-				totalrec=totalrec+len;
-				size_t byteswritten=0;
-				i2s_write(I2S_PORT, rx_buffer, len, &byteswritten, portMAX_DELAY);
-                //ESP_LOGI(TAG, "Received %d bytes from %s:", len, addr_str);
-
-                //int err = sendto(sock, rx_buffer, len, 0, (struct sockaddr *)&source_addr, sizeof(source_addr));
-                //if (err < 0) {
-                //    ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
-                //    break;
-                //}
-            }
-        }
-
-        if (sock != -1) {
-            ESP_LOGE(TAG, "Shutting down socket and restarting...");
-            shutdown(sock, 0);
-            close(sock);
-        }
-    }
-    vTaskDelete(NULL);
-}
-
-static void udp_sender_task(void *pvParameters)
-{
-    int addr_family = 0;
-    int ip_protocol = 0;
-    uint8_t tx_buffer[BUFFLEN];
-
-    while (1) {
-        struct sockaddr_in dest_addr;
-        dest_addr.sin_addr.s_addr = inet_addr(SEND_HOST);
-        dest_addr.sin_family = AF_INET;
-        dest_addr.sin_port = htons(SEND_PORT);
-        addr_family = AF_INET;
-        ip_protocol = IPPROTO_IP;
+        ESP_LOGI(TAG, "Socket bound, port %d", UDP_PORT);
 		
-        int sockudp = socket(addr_family, SOCK_DGRAM, ip_protocol);
-        if (sockudp < 0) {
-            ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
-            break;
-        }
-        ESP_LOGI(TAG, "Socket created, sending to %s:%d", SEND_HOST, SEND_PORT);
-			
+		size_t leni2s=0;
+		int lenudp=0;
         while (1) {
+			// sender
 			/////////////////// read I2S->Send TCP
-			size_t reci2s=0;
-			i2s_read(I2S_PORT, tx_buffer, BUFFLEN, &reci2s, portMAX_DELAY);
-            int sentlen = sendto(sockudp, tx_buffer, BUFFLEN, 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-            if (sentlen < 0) {
+			i2s_read(I2S_PORT, x_buffer, BUFFLEN, &leni2s, portMAX_DELAY);
+            lenudp = sendto(udpsocket, x_buffer, leni2s, 0, (struct sockaddr *)&dest_addrS, sizeof(dest_addrS));
+			speedsent=speedsent+lenudp; totalsent=totalsent+lenudp; 
+            if (lenudp < 0) {
                 ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
                 break;
             }
-			totalsent=totalsent+sentlen; speedsent=speedsent+sentlen;
-            }
 			
-		if (sockudp != -1) {
-			ESP_LOGE(TAG, "Shutting down socket and restarting...");
-			shutdown(sockudp, 0);
-			close(sockudp);
-		}
-       }
+			// receiver
+            lenudp = recv(udpsocket, x_buffer, sizeof(x_buffer),0);
+			speedrec=speedrec+lenudp; totalrec=totalrec+lenudp;
+            if (lenudp < 0) {
+                ESP_LOGE(TAG, "recvfrom failed: errno %d", errno);
+                break;
+            }
+            else {
+				i2s_write(I2S_PORT, x_buffer, lenudp, &leni2s, portMAX_DELAY);
+            }
+        }
+
+        if (udpsocket != -1) {
+            ESP_LOGE(TAG, "Shutting down socket and restarting...");
+            shutdown(udpsocket, 0);
+            close(udpsocket);
+        }
+    }
     vTaskDelete(NULL);
 }
 
@@ -220,17 +170,19 @@ void app_main(void)
         .ssid = WIFI_SSID,
         .password = WIFI_PASSWORD,
     };
+    ESP_LOGI(TAG, "[ 3.1 ] Connecting to %s / %s",WIFI_SSID,WIFI_PASSWORD );
     esp_periph_handle_t wifi_handle = periph_wifi_init(&wifi_cfg);
     esp_periph_start(set, wifi_handle);
     periph_wifi_wait_for_connected(wifi_handle, portMAX_DELAY);
+    ESP_LOGI(TAG, "[ 3.2 ] Connected to %s",WIFI_SSID ); 
+	
 
     ESP_LOGI(TAG, "[ 4 ] Set up  event listener");
     audio_event_iface_cfg_t evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
     audio_event_iface_handle_t evt = audio_event_iface_init(&evt_cfg);
 
-    xTaskCreate(udp_sender_task, "udp_sender", 10000, NULL, 5, NULL);
-    xTaskCreate(timer1, "timer1", 10000, NULL, 5, NULL);
-    xTaskCreate(udp_server_task, "udp_server", 4096, (void*)AF_INET, 5, NULL);
+    xTaskCreate(audio_task, "audio_task", 10000, (void*)AF_INET, 5, NULL);
+    xTaskCreate(timer1, "timer1", 4096, NULL, 5, NULL);
 
     while (1) {
         audio_event_iface_msg_t msg;
