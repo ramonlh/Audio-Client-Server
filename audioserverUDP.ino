@@ -7,15 +7,14 @@
 #include "driver/i2s.h"
 #include "I2s_SettingRX.h"
 #include <WiFiUdp.h>
+#include <RTPPacket.h>
 
 const char* ssid = "conuco4";
 const char* password = "18921892";
 
 const int udpPort = 3334;
-const int sendPort = 3334;
 
 WiFiUDP udpsocket;
-uint8_t recbuff[BUFFLEN];
 
 TaskHandle_t timer1_TaskHandler = NULL;
 TaskHandle_t audio_TaskHandler = NULL;
@@ -27,6 +26,7 @@ unsigned long speedsent=0;
 unsigned long tini=0;
 byte scaled=0;
 IPAddress remoteIP=(0,0,0,0);
+int remotePort=0;
 boolean clientexists=false;
 int logtime=1;
 
@@ -34,7 +34,8 @@ static void timer1_task(void *arg)
 {
   while (1)
     {
-    Serial.print("Remote client: "); Serial.print(remoteIP);
+    Serial.print("Client: "); Serial.print(remoteIP);
+    Serial.print(":"); Serial.print(remotePort);
     Serial.print(" Rec/Sent: "); Serial.print(speedrec/logtime);
     Serial.print("/"); Serial.println(speedsent/logtime);
     speedrec=0; speedsent=0; 
@@ -42,8 +43,12 @@ static void timer1_task(void *arg)
     }
 }
 
+RTPPacket rtp;
+
 static void audio_task(void *arg)
 {
+  uint8_t udpbuff[BUFFLEN];
+  uint8_t rtpheader[12];
   size_t bytes_read=0;
   udpsocket.begin(udpPort);
   while(1)
@@ -51,21 +56,22 @@ static void audio_task(void *arg)
     int packetSize = udpsocket.parsePacket();
     if (packetSize>0) {
       remoteIP = udpsocket.remoteIP();
+      remotePort=udpsocket.remotePort();
       clientexists=true;
-      int leidos=udpsocket.read(recbuff, BUFFLEN);
+      int leidos=udpsocket.read(udpbuff, BUFFLEN);
       if (leidos > 0)
-          i2s_write_bytes(I2S_PORT_TX, recbuff, leidos, portMAX_DELAY);
+          i2s_write_bytes(I2S_PORT_TX, udpbuff+12, leidos-12, portMAX_DELAY);
       speedrec=speedrec+leidos;
       totalrec=totalrec+leidos;
       }
     //////////////////////////////////// 
-    i2s_read(I2S_PORT_RX, recbuff, BUFFLEN, &bytes_read, portMAX_DELAY);
+    i2s_read(I2S_PORT_RX, udpbuff+12, BUFFLEN-12, &bytes_read, portMAX_DELAY);
     if (clientexists)
       {
       if (bytes_read>0)
         {
-        udpsocket.beginPacket(remoteIP,sendPort);
-        udpsocket.write(recbuff, BUFFLEN);
+        udpsocket.beginPacket(remoteIP,remotePort);
+        udpsocket.write(udpbuff, BUFFLEN);
         udpsocket.endPacket();
         speedsent=speedsent+bytes_read;
         totalsent=totalsent+bytes_read;
