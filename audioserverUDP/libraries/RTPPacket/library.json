@@ -1,0 +1,22 @@
+{
+  "name": "jrtp",
+  "keywords": "",
+  "description": "Arduino implementation of rtp protocol. RFC 3550",
+  "repository":
+  {
+    "type": "git",
+    "url": "https://github.com/1995parham/jrtp"
+  },
+  "authors":
+  [
+    {
+      "name": "Parham Alvani",
+      "email": "parham.alvani@gmail.com",
+      "url": "http://1995parham.github.io/",
+      "maintainer": true
+    }
+  ],
+  "version": "1.2",
+  "frameworks": "arduino",
+  "platforms": "*"
+}
