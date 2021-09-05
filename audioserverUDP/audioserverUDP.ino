@@ -23,9 +23,9 @@ ESP_fft FFT(FFT_N, SAMPLEFREQ, FFT_REAL, FFT_FORWARD, fft_input, fft_output);
 #include <HTTPClient.h>
 #include <RTPPacket.h>
 
-#define WIFI_SSID "elconuco"
-#define WIFI_PASSWORD "18921892"
-#define CALLSIGN "EA4GZI"
+#define WIFI_SSID "ssid"      // your ssid
+#define WIFI_PASSWORD "pass"  // your password
+#define CALLSIGN "EA4GZI"         // your Callsign
 #define UDP_PORT 3334  
 #define BROKER_URI "broker.mqtt-dashboard.com"
 #define HOST_MYIP "icanhazip.com"
